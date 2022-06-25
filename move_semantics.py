@@ -2,6 +2,7 @@ import contextlib
 import platform
 import sys
 import inspect
+from weakref import WeakValueDictionary
 from typing import Generator, Generic, TypeVar, Protocol, NewType, TYPE_CHECKING,Any
 
 if TYPE_CHECKING:
@@ -22,6 +23,32 @@ class Gone:
         self._inner_value = value
 
 
+def _wipe_value_from_locals(value: Any, caller: 'FrameType') -> WeakValueDictionary:
+    caller_locals = caller.f_locals
+    locals_modified = False
+    removed_values = WeakValueDictionary()
+    for k in list(caller_locals):
+        if caller_locals[k] is value:
+            caller_locals[k] = Gone(caller_locals[k])
+            removed_values[k] = caller_locals[k]
+            locals_modified = True
+
+    if locals_modified:
+        locals_to_fast(caller)
+
+    return removed_values
+
+
+class MoveError(RuntimeError):
+    pass
+
+class NoUniqueAccessError(MoveError):
+    pass
+
+class LeakedMoveError(MoveError):
+    pass
+
+
 @contextlib.contextmanager
 def move(value: T) -> Generator[Move[T], None, None]:
     if not RUNTIME_CHECKS or type(value) in _INTERNED_TYPES:
@@ -30,30 +57,18 @@ def move(value: T) -> Generator[Move[T], None, None]:
 
     # caller's local variable, our local variable and getrefcount
     if sys.getrefcount(value) > 3:
-        raise RuntimeError("no unique access to value!")
+        raise NoUniqueAccessError(value)
 
     # caller frame
     caller: 'FrameType' = inspect.currentframe().f_back.f_back  # type: ignore
-    caller_locals = caller.f_locals
-    locals_modified = False
-    for k in list(caller_locals):
-        if caller_locals[k] is value:
-            caller_locals[k] = Gone(caller_locals[k])
-            locals_modified = True
-
-    if locals_modified:
-        locals_to_fast(caller)
-
-    del caller
-    del caller_locals
+    removed_values = _wipe_value_from_locals(value, caller)
 
     yield value  # type: ignore
 
-    # our local variable, getrefcount, and for some reason
-    # overriding the caller's local variable with Gone
-    # creates another reference
-    if sys.getrefcount(value) > 3:
-        raise RuntimeError("value has not been deleted. please insert del stmt")
+    removed_values.update(_wipe_value_from_locals(value, caller))
+
+    if removed_values:
+        raise LeakedMoveError(dict(removed_values))
 
 def unpack(value: Move[T]) -> T:
     return value  # type: ignore
