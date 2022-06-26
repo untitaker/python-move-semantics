@@ -2,7 +2,7 @@ import contextlib
 import platform
 import sys
 import inspect
-from weakref import WeakValueDictionary
+from weakref import WeakSet, WeakValueDictionary
 from typing import Generator, Generic, TypeVar, Protocol, NewType, TYPE_CHECKING,Any
 
 if TYPE_CHECKING:
@@ -70,15 +70,26 @@ def move(value: T) -> Generator[Move[T], None, None]:
     if removed_values:
         raise LeakedMoveError(dict(removed_values))
 
+    _unpacked_values.clear()
+
+
+_unpacked_values = {}
+
+
 def unpack(value: Move[T]) -> T:
+    if RUNTIME_CHECKS:
+        if _unpacked_values.get(id(value)) is value:
+            raise NoUniqueAccessError(value)
+        
+        _unpacked_values[id(value)] = value
     return value  # type: ignore
 
 
-if platform.python_implementation() == "PyPy":
-    from __pypy__ import locals_to_fast  # type: ignore
-elif platform.python_implementation() == "CPython":
+if platform.python_implementation() == "CPython":
     import ctypes
 
     def locals_to_fast(frame):
         # type: (FrameType) -> None
         ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(0))
+elif platform.python_implementation() == "PyPy":
+    from __pypy__ import locals_to_fast  # type: ignore

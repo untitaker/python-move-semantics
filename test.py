@@ -1,7 +1,7 @@
 import pytest
-from typing import Dict
+from typing import Dict, List
 
-from move_semantics import LeakedMoveError, Move, unpack, move, Gone
+from move_semantics import LeakedMoveError, Move, unpack, move, Gone, NoUniqueAccessError
 
 def get_id(value: Move[Dict[str, str]]) -> str:
     value_unpacked = unpack(value)
@@ -61,10 +61,71 @@ def test_multiple_references() -> None:
 def test_store_value() -> None:
     storage = []
 
-    def store_value(value: Move[Dict[str, str]]):
+    def store_value(value: Move[Dict[str, str]]) -> None:
         storage.append(unpack(value))
 
     value = {"id": "foobar"}
     with move(value) as moved_value:
         store_value(moved_value)
+        del value, moved_value
+
+
+def test_move_again() -> None:
+    Ty = Dict[str, str]
+    storage1 = []
+    def bar(value: Move[Ty]) -> None:
+        storage1.append(unpack(value))
+        pass
+
+    storage2 = []
+    def foo(value: Move[Ty]) -> None:
+        storage2.append(unpack(value))
+        bar(value)
+
+    value = {"id": "foobar"}
+
+    with pytest.raises(NoUniqueAccessError):
+        with move(value) as moved_value:
+            foo(moved_value)
+            del value, moved_value
+
+
+def test_move_again2() -> None:
+    Ty = Dict[str, str]
+    storage1: List[Ty] = []
+    def bar(value: Move[Ty]) -> None:
+        storage1.append(unpack(value))
+
+    storage2: List[Ty] = []
+    def foo(value: Move[Ty]) -> None:
+        value2 = unpack(value)
+        storage2.append(value2)
+
+        with move(value2) as value3:
+            bar(value3)
+            del value2, value3, value
+
+    value = {"id": "foobar"}
+
+    with pytest.raises(NoUniqueAccessError):
+        with move(value) as moved_value:
+            foo(moved_value)
+            del value, moved_value
+
+def test_move_three_times() -> None:
+    Ty = Dict[str, str]
+    storage1 = []
+    def baz(value: Move[Ty]) -> None:
+        storage1.append(unpack(value))
+
+    def bar(value: Move[Ty]) -> None:
+        baz(value)
+
+    def foo(value: Move[Ty]) -> None:
+        bar(value)
+
+    value = {"id": "foobar"}
+
+    with move(value) as moved_value:
+        foo(moved_value)
         del value, moved_value
